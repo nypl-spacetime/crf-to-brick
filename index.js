@@ -1,54 +1,77 @@
+
+#!/usr/bin/env node
+
 const fs = require('fs')
 const path = require('path')
 const H = require('highland')
+const brickDb = require('to-brick')
+const argv = require('minimist')(process.argv.slice(2))
 
-const surveyorDb = require('to-surveyor')
-
-const PROVIDER = 'nypl'
+const ORGANIZATION_ID = 'nypl'
 const DATA_DIR = path.join(__dirname, 'data')
+const COLLECTIONS = require(path.join(DATA_DIR, 'collections.json'))
 
-const collections = fs.readdirSync(DATA_DIR)
-    .filter((file) => fs.statSync(path.join(DATA_DIR, file)).isDirectory())
+var cityDirectoriesDir
+if (argv._ && argv._.length) {
+  cityDirectoriesDir = argv._[0]
+} else {
+  console.error('Please specify City Directory data directory')
+  process.exit(1)
+}
 
-collections.forEach((collectionId) => {
-  const collection = {
-    provider: PROVIDER,
-    id: collectionId,
-    tasks: [
-      'label-fields'
-    ],
-    submissions_needed: 1, // submissionsNeeded: -1 means endless!!!!
-    data: require(path.join(DATA_DIR, collectionId, 'collection.json'))
+const TASKS = [
+  {
+    id: 'label-fields',
+    submissionsNeeded: 5
   }
+]
 
-  surveyorDb.addCollection(collection, (err) => {
-    if (err) {
-      console.error(`Error adding collection ${collectionId}: ${err.message}`)
-    } else {
-      console.log(`Done adding collection ${collectionId}`)
-      H(fs.createReadStream(path.join(DATA_DIR, collectionId, 'lines.ndjson')))
-        .split()
-        .compact()
-        .map(JSON.parse)
-        .map((line) => ({
-          provider: PROVIDER,
-          id: `${collectionId}:${line.id}`,
-          collection_id: collectionId,
-          data: {
-            text: line.text,
-            bbox: line.bbox,
-            pageNum: line.page_num
-          }
-        }))
-        .toArray((items) => {
-          surveyorDb.addItems(items, (err) => {
-            if (err) {
-              console.error(`Error adding items for collection ${collectionId}: ${err.message}`)
-            } else {
-              console.log(`Done adding ${items.length} items for collection ${collectionId}`)
-            }
-          })
-        })
-    }
+const tasks = TASKS
+  .map((task) => ({
+    id: task.id
+  }))
+
+const collections = COLLECTIONS
+  .map((collection) => ({
+    organization_id: ORGANIZATION_ID,
+    tasks: TASKS,
+    id: collection.uuid,
+    url: collection.url
+  }))
+
+function createLinesStream(collection) {
+  // Now uses every tenth line
+  // Maybe use every first 25 of each page instead?
+  var i = 0
+  return H(fs.createReadStream(collection.lines, 'utf8'))
+    .split()
+    .compact()
+    .map(JSON.parse)
+    .map((line) => {
+      const item = {
+        id: `${collection.uuid}.${line.id}`,
+        collection_id: collection.uuid,
+        organization_id: ORGANIZATION_ID,
+        data:{
+          page_num: line.page_num,
+          bbox: line.bbox,
+          text: line.text
+        }
+      }
+
+      i += 1
+      return item
+    })
+    .filter((line) => i % 10 === 0)
+}
+
+H(COLLECTIONS)
+  .map((collection) => Object.assign(collection, {
+    lines: path.join(cityDirectoriesDir, collection.dir, 'lines.ndjson')
+  }))
+  .filter((collection) => fs.existsSync(collection.lines))
+  .map((collection) => createLinesStream(collection))
+  .flatten()
+  .toArray((items) => {
+    brickDb.addAll(tasks, collections, items, true)
   })
-})
