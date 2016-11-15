@@ -1,4 +1,3 @@
-
 #!/usr/bin/env node
 
 const fs = require('fs')
@@ -36,24 +35,34 @@ const collections = COLLECTIONS
     organization_id: ORGANIZATION_ID,
     tasks: TASKS,
     id: collection.uuid,
-    url: collection.url
+    url: collection.url,
+    data: {
+      fields: collection.fields
+    }
   }))
 
 function createLinesStream(collection) {
   // Now uses every tenth line
   // Maybe use every first 25 of each page instead?
   var i = 0
+  var lastPageNum = 0
   return H(fs.createReadStream(collection.lines, 'utf8'))
     .split()
     .compact()
     .map(JSON.parse)
     .map((line) => {
+      const pageNum = line.page_num
+      if (lastPageNum !== pageNum) {
+        i = 0
+      }
+      lastPageNum = pageNum
+
       const item = {
         id: `${collection.uuid}.${line.id}`,
         collection_id: collection.uuid,
         organization_id: ORGANIZATION_ID,
         data:{
-          page_num: line.page_num,
+          page_num: pageNum,
           bbox: line.bbox,
           text: line.text
         }
@@ -62,7 +71,7 @@ function createLinesStream(collection) {
       i += 1
       return item
     })
-    .filter((line) => i % 10 === 0)
+    .filter((line) => i <= 10)
 }
 
 H(COLLECTIONS)
